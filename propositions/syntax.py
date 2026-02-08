@@ -59,9 +59,29 @@ def is_binary(string: str) -> bool:
     Returns:
         ``True`` if the given string is a binary operator, ``False`` otherwise.
     """
-    return string == '&' or string == '|' or string == '->'
+    return string in {'&', '|',  '->', '+', '<->', '-&', '-|'}
     # For Chapter 3:
     # return string in {'&', '|',  '->', '+', '<->', '-&', '-|'}
+
+@lru_cache(maxsize=100)
+def first_chunk_str(string):
+    # case {'->', '-&', '-|'}
+    if string and string[0] == '-':
+        chunk, rest = string[:2], string[2:]
+    # case {'<->'}
+    elif string and string[0] == '<':
+        chunk, rest = string[:3], string[3:]
+    # case {'&', '|', '+', constants, first letter of variables}
+    else:
+        chunk, rest = string[:1], string[1:]
+    
+    # extend variables
+    if chunk and is_variable(chunk):
+        while rest and rest[0].isdecimal():
+            chunk += rest[0]
+            rest = rest[1:]
+
+    return chunk, rest
 
 @frozen
 class Formula:
@@ -93,10 +113,10 @@ class Formula:
         """
         if is_variable(root) or is_constant(root):
             assert first is None and second is None
-            self.root = root
+            self.root, self.first, self.second = root, None, None
         elif is_unary(root):
             assert first is not None and second is None
-            self.root, self.first = root, first
+            self.root, self.first, self.second = root, first, None
         else:
             assert is_binary(root)
             assert first is not None and second is not None
@@ -110,6 +130,13 @@ class Formula:
             The standard string representation of the current formula.
         """
         # Task 1.1
+        if is_variable(self.root) or is_constant(self.root):
+            return self.root
+        elif is_unary(self.root):
+            return self.root + self.first.__repr__()
+        else:
+            assert is_binary(self.root)
+            return '(' + self.first.__repr__() + self.root + self.second.__repr__() + ')'
 
     def __eq__(self, other: object) -> bool:
         """Compares the current formula with the given one.
@@ -146,6 +173,15 @@ class Formula:
             A set of all variable names used in the current formula.
         """
         # Task 1.2
+        if is_constant(self.root):
+            return set()
+        elif is_variable(self.root):
+            return {self.root}
+        elif is_unary(self.root):
+            return self.first.variables()
+        else:
+            assert is_binary(self.root)
+            return self.first.variables() | self.second.variables()
 
     @memoized_parameterless_method
     def operators(self) -> Set[str]:
@@ -156,6 +192,15 @@ class Formula:
             current formula.
         """
         # Task 1.3
+        if is_constant(self.root):
+            return {self.root}
+        elif is_variable(self.root):
+            return set()
+        elif is_unary(self.root):
+            return {self.root} | self.first.operators()
+        else:
+            assert is_binary(self.root)
+            return {self.root} | self.first.operators() | self.second.operators()
         
     @staticmethod
     def _parse_prefix(string: str) -> Tuple[Union[Formula, None], str]:
@@ -175,6 +220,50 @@ class Formula:
             is a string with some human-readable content.
         """
         # Task 1.4
+        chunk, rest = first_chunk_str(string)
+        if not chunk:
+            pre = None
+            suf = 'Error: empty string'
+        elif is_constant(chunk):
+            pre = Formula(chunk)
+            suf = rest
+        elif is_variable(chunk):
+            pre = Formula(chunk)
+            suf = rest
+        elif is_unary(chunk):
+            first, rest = Formula._parse_prefix(rest)
+            if first is None:
+                pre = None
+                suf = rest
+            else:
+                pre = Formula(chunk, first)
+                suf = rest
+        elif chunk == '(':
+            first, rest = Formula._parse_prefix(rest)
+            if first is None:
+                pre = None
+                suf = rest
+            else:
+                binop, rest = first_chunk_str(rest)
+                if not is_binary(binop):
+                    pre = None
+                    suf = 'Error: wrong syntax'
+                else:
+                    second, rest = Formula._parse_prefix(rest)
+                    if second is None:
+                        pre = None
+                        suf = rest
+                    elif not rest.startswith(')'):
+                        pre = None
+                        suf = 'Error: wrong syntax'
+                    else:
+                        pre = Formula(binop, first, second)
+                        suf = rest[1:] 
+        else:
+            pre = None
+            suf = 'Error: wrong syntax'        
+        
+        return pre, suf
 
     @staticmethod
     def is_formula(string: str) -> bool:
@@ -188,6 +277,9 @@ class Formula:
             representation of a formula, ``False`` otherwise.
         """
         # Task 1.5
+        string = str(string)
+        formula, rest = Formula._parse_prefix(string)
+        return formula is not None and rest == ''
         
     @staticmethod
     def parse(string: str) -> Formula:
@@ -201,6 +293,8 @@ class Formula:
         """
         assert Formula.is_formula(string)
         # Task 1.6
+        formula, emptystring = Formula._parse_prefix(string)
+        return formula
 
     def polish(self) -> str:
         """Computes the polish notation representation of the current formula.
@@ -209,6 +303,11 @@ class Formula:
             The polish notation representation of the current formula.
         """
         # Optional Task 1.7
+        if is_variable(self.root) or is_constant(self.root):
+            return self.root
+        if is_unary(self.root):
+            return self.root + self.first.polish()
+        return self.root + self.first.polish() + self.second.polish()
 
     @staticmethod
     def parse_polish(string: str) -> Formula:
@@ -221,6 +320,30 @@ class Formula:
             A formula whose polish notation representation is the given string.
         """
         # Optional Task 1.8
+        def _parse_polish_prefix(s: str) -> Tuple[Union[Formula, None], str]:
+            chunk, rest = first_chunk_str(s)
+            if not chunk:
+                return None, 'Error: empty string'
+            if is_constant(chunk) or is_variable(chunk):
+                return Formula(chunk), rest
+            if is_unary(chunk):
+                first, rest2 = _parse_polish_prefix(rest)
+                if first is None:
+                    return None, rest2
+                return Formula(chunk, first), rest2
+            if is_binary(chunk):
+                first, rest2 = _parse_polish_prefix(rest)
+                if first is None:
+                    return None, rest2
+                second, rest3 = _parse_polish_prefix(rest2)
+                if second is None:
+                    return None, rest3
+                return Formula(chunk, first, second), rest3
+            return None, 'Error: wrong syntax'
+
+        formula, rest = _parse_polish_prefix(str(string))
+        assert formula is not None and rest == ''
+        return formula
 
     def substitute_variables(self, substitution_map: Mapping[str, Formula]) -> \
             Formula:
@@ -245,7 +368,15 @@ class Formula:
         """
         for variable in substitution_map:
             assert is_variable(variable)
-        # Task 3.3
+        if is_variable(self.root) and self.root in substitution_map:
+            return substitution_map[self.root]
+        if is_unary(self.root):
+            return Formula(self.root, self.first.substitute_variables(substitution_map))
+        if is_binary(self.root):
+            return Formula(self.root,
+                           self.first.substitute_variables(substitution_map),
+                           self.second.substitute_variables(substitution_map))
+        return self
 
     def substitute_operators(self, substitution_map: Mapping[str, Formula]) -> \
             Formula:
@@ -276,3 +407,19 @@ class Formula:
                    is_binary(operator)
             assert substitution_map[operator].variables().issubset({'p', 'q'})
         # Task 3.4
+        if is_constant(self.root) and self.root in substitution_map:
+            return substitution_map[self.root]
+        elif is_unary(self.root):
+            first = Formula.substitute_operators(self.first, substitution_map)
+            if self.root in substitution_map:
+                return Formula.substitute_variables(substitution_map[self.root], {'p':first})
+            else:
+                return Formula(self.root, first)
+        elif is_binary(self.root):
+            first = Formula.substitute_operators(self.first, substitution_map)
+            second = Formula.substitute_operators(self.second, substitution_map)
+            if self.root in substitution_map:
+                return Formula.substitute_variables(substitution_map[self.root], {'p':first, 'q':second})
+            else:
+                return Formula(self.root, first, second)
+        return self
